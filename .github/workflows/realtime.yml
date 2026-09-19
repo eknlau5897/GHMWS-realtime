@@ -1,0 +1,55 @@
+name: Real-Time Meteorological Engine Pipeline (macOS)
+
+on:
+  schedule:
+    - cron: '10 * * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  run-pipeline:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+
+      - name: Install macOS System Dependencies
+        run: |
+          brew update
+          brew install geos proj gdal eccodes
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Python Dependencies
+        run: |
+          python3 -m pip install --upgrade pip setuptools wheel
+          python3 -m pip install pandas xarray numpy matplotlib cartopy scipy cfgrib eccodes herbie-data metpy pint
+
+      - name: Run Core Meteorological Data Processors
+        run: |
+          echo "📈 Running core weather processing matrix..."
+          python3 hk-temperature.py || echo "⚠️ hk-temperature.py encountered an issue"
+          python3 hk-wind.py || echo "⚠️ hk-wind.py encountered an issue"
+
+      - name: Collapse History & Commit Changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Delete local reference to maintain a single-commit history
+          git update-ref -d refs/heads/main
+          git add -A
+          git commit -m "Auto update: Weather data baseline $(date) [History Cleared]" --allow-empty
+
+      - name: Force Push Zero-Overhead Stream
+        run: |
+          git push origin HEAD:refs/heads/main --force
