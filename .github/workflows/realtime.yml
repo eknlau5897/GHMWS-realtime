@@ -1,0 +1,81 @@
+name: Self-Renewing Weather Daemon (Single Run)
+
+on:
+  schedule:
+    # Safety fallback trigger once a day at midnight UTC in case of network drops
+    - cron: '0 0 * * *'
+  workflow_dispatch: # Allows manual start & self-renewal trigger
+
+# Concurrency rule ensures that only ONE instance runs at a time.
+# If a new one triggers, it cancels/queues cleanly.
+concurrency:
+  group: weather-daemon-single
+  cancel-in-progress: false
+
+jobs:
+  run-weather-loop:
+    runs-on: macOS-latest
+
+    permissions:
+      contents: write
+      actions: write   # Required for gh workflow run using default GITHUB_TOKEN
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch refs so update-ref works cleanly
+
+      - name: Set up Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas beautifulsoup4 xarray netCDF4 scipy herbie-data cartopy metpy matplotlib
+
+      - name: Run 5.5-Hour Loop (History Clear Every 10 Mins)
+        run: |
+          # 19,800 seconds = 5.5 hours (30 min buffer before 6-hour runner limit)
+          END_TIME=$(($(date +%s) + 19800))
+          INTERVAL=600 # 10 minutes
+
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          BRANCH="main"
+
+          while [ $(date +%s) -lt $END_TIME ]; do
+            echo "=================================================================="
+            echo "   REAL-TIME METEOROLOGICAL ENGINE (SINGLE DAEMON)               "
+            echo "=================================================================="
+            echo "--- Cycle Start: $(date) ---"
+
+            # 1. Execute weather scripts
+            python hk-temperature.py || echo "⚠️ hk-temperature.py encountered an issue"
+            python hk-wind.py || echo "⚠️ hk-wind.py encountered an issue"
+
+            # 2. Collapse commit history down to 1 baseline commit
+            echo "⚠️ Collapsing execution tracking layers down to 1 single commit..."
+            git update-ref -d refs/heads/"$BRANCH" || true
+            git add -A
+            git commit -m "Auto update: Weather data baseline $(date) [History Cleared]"
+
+            # 3. Force-push zero-overhead commit to remote branch
+            echo "🚀 Force-pushing zero-overhead stream to GitHub..."
+            git push origin "$BRANCH" --force || echo "❌ Push error, retrying next cycle..."
+
+            echo "Sleeping for 10 minutes..."
+            sleep $INTERVAL
+          done
+
+          echo "⌛ 5.5 hours elapsed. Preparing handoff to next runner..."
+
+      - name: Trigger Self-Renewal (Single Run Handoff)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "⚡ Triggering next single workflow run using default GITHUB_TOKEN..."
+          gh workflow run realtime.yml --ref main
